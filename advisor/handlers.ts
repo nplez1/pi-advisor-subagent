@@ -13,9 +13,10 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { modelKey } from "@juicesharp/rpiv-config";
-import { ADVISOR_TOOL_NAME, MSG_ADVISOR_DISABLED, msgAdvisorRestored } from "./messages.js";
+import { ADVISOR_TOOL_NAME, MSG_ADVISOR_DISABLED, modelLabel, msgAdvisorRestored } from "./messages.js";
 import { isExecutorBlocked, isModelBlocked } from "./policy.js";
 import { resolveAdvisorSelection } from "./selection.js";
+import { clearPublishedClaudeCode, setClaudeCodeFromSettings } from "./subagent-defaults.js";
 
 interface ReconcileNotify {
 	/** Shown when the tool is stripped (executor became blocked). */
@@ -43,8 +44,27 @@ export function reconcileAdvisorTool(
 	}
 }
 
-/** The label the pipeline reports for a resolved stage. */
-const labelOf = (model: { provider: string; id: string }): string => `${model.provider}:${model.id}`;
+/**
+ * Track the switch value pi-subagents applied but could not persist.
+ *
+ * The FILES are read directly (subagent-defaults.ts), because pi-subagents reads
+ * the same two files and a hand edit has to be visible to both. What the files
+ * cannot express is a menu write that failed to save: `claudeCodeSession` on the
+ * settings events carries exactly that, and nothing else is taken from them —
+ * publishing the effective value would hand this plugin a copy of the file's own
+ * content, which would then outlive the line it came from.
+ */
+export function registerClaudeCodeSettingSync(pi: ExtensionAPI): void {
+	// Module state outlives a session; the switch does not. Without this, a value
+	// published by a previous session would win over a file edited since.
+	clearPublishedClaudeCode();
+	const apply = (payload: unknown): void => {
+		const settings = (payload as { settings?: { claudeCodeSession?: unknown } } | undefined)?.settings;
+		setClaudeCodeFromSettings(settings?.claudeCodeSession);
+	};
+	pi.events.on("subagents:settings_loaded", apply);
+	pi.events.on("subagents:settings_changed", apply);
+}
 
 export function registerAdvisorBeforeAgentStart(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (_event, ctx) => {
@@ -72,7 +92,7 @@ export function registerModelSelectHandler(pi: ExtensionAPI): void {
 			blocked: isModelBlocked(event.model, pi.getThinkingLevel()),
 			notify: {
 				disabled: `Advisor disabled for ${modelKey(event.model)}`,
-				restored: msgAdvisorRestored(labelOf(advisor.model), advisor.effort),
+				restored: msgAdvisorRestored(modelLabel(advisor.model), advisor.effort),
 			},
 		});
 	});
@@ -91,7 +111,7 @@ export function registerThinkingLevelSelectHandler(pi: ExtensionAPI): void {
 			blocked: isModelBlocked(model, event.level),
 			notify: {
 				disabled: model ? `Advisor disabled for ${modelKey(model)}` : MSG_ADVISOR_DISABLED,
-				restored: msgAdvisorRestored(labelOf(advisor.model), advisor.effort),
+				restored: msgAdvisorRestored(modelLabel(advisor.model), advisor.effort),
 			},
 		});
 	});

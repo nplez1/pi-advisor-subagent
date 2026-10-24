@@ -22,6 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createClaudeCodeModel, isClaudeCodeModelSpec } from "./claude-code.js";
 
 const VALID_THINKING: ReadonlySet<string> = new Set([
 	"off",
@@ -46,17 +47,74 @@ interface RawOverride {
 	enabled?: unknown;
 }
 
-/** Read `agentOverrides` from one pi-subagents settings file. {} when absent/corrupt. */
-function readOverrides(path: string): Record<string, RawOverride> {
+/** Read one settings file whole. {} when absent, unreadable, or not an object. */
+function readFileObject(path: string): Record<string, unknown> {
 	if (!existsSync(path)) return {};
 	try {
-		const raw = JSON.parse(readFileSync(path, "utf-8")) as { agentOverrides?: unknown };
-		const overrides = raw?.agentOverrides;
-		if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) return {};
-		return overrides as Record<string, RawOverride>;
+		const raw = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+		return raw as Record<string, unknown>;
 	} catch {
 		return {};
 	}
+}
+
+/** Read `agentOverrides` from one pi-subagents settings file. {} when absent/corrupt. */
+function readOverrides(path: string): Record<string, RawOverride> {
+	const overrides = readFileObject(path).agentOverrides;
+	if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) return {};
+	return overrides as Record<string, RawOverride>;
+}
+
+/**
+ * The switch value pi-subagents applied but could NOT persist, when it has one.
+ *
+ * That is the only thing the files cannot tell this plugin, so it is the only
+ * thing taken from the events. Adopting the platform's EFFECTIVE value instead
+ * would be adopting a copy of the file's, and would outlive the line it came
+ * from: delete `"claudeCode": false` mid-session and this plugin would keep
+ * refusing a stage pi-subagents now runs.
+ *
+ * `undefined` means "nothing published", which is also what a successful write
+ * (and every startup) publishes.
+ */
+let publishedClaudeCode: boolean | undefined;
+
+/** Take the session-only value from pi-subagents' settings events. */
+export function setClaudeCodeFromSettings(value: unknown): void {
+	publishedClaudeCode = typeof value === "boolean" ? value : undefined;
+}
+
+/** Test hook: drop back to reading the files. */
+export function clearPublishedClaudeCode(): void {
+	publishedClaudeCode = undefined;
+}
+
+/**
+ * The switch as the two `subagents.json` files state it, or `undefined`.
+ *
+ * Project over global, absent meaning "no file says" — the same precedence
+ * pi-subagents applies, so the advisor's report and the spawn read one answer.
+ *
+ * No `cwd` means the caller has no project scope; only the global file applies.
+ */
+function fileClaudeCode(cwd: string | undefined): boolean | undefined {
+	const project = cwd ? readFileObject(join(cwd, ".pi", "subagents.json")).claudeCode : undefined;
+	if (typeof project === "boolean") return project;
+	const global = readFileObject(join(getAgentDir(), "subagents.json")).claudeCode;
+	return typeof global === "boolean" ? global : undefined;
+}
+
+/**
+ * Whether `claude/*` may select the Claude Code backend on this machine.
+ *
+ * Files first, then the session-only value pi-subagents published, then the
+ * default. The files decide because they are what the spawn reads; the published
+ * value covers the one state a file cannot express, a setting applied but not
+ * saved.
+ */
+export function isClaudeCodeEnabled(cwd: string | undefined): boolean {
+	return (fileClaudeCode(cwd) ?? publishedClaudeCode) !== false;
 }
 
 /** One agent's entry, matched exactly then by a unique case-insensitive name. */
@@ -106,28 +164,63 @@ export function readSubagentDefault(agentType: string, cwd: string | undefined):
 	return out;
 }
 
+interface RegistryRef {
+	find(provider: string, id: string): Model<Api> | undefined;
+	getAvailable?(): { provider: string; id: string }[];
+	getAll?(): { provider: string; id: string }[];
+}
+
 /**
- * Resolve a `/subagents` model default to a registry model. Exact
- * `provider/modelId` first (what the picker writes), then a bare-id match, so a
- * hand-written alias still works. Undefined when it does not resolve — callers
- * fall back to their own selection rather than failing the tool.
+ * Whether the registry knows a provider literally named `claude`.
+ *
+ * A user-defined provider with that name owns `claude/*` specs; the Claude Code
+ * backend only claims them when nothing else answers to the prefix. Mirrors
+ * pi-subagents' own `resolveModel`, which is what actually executes the spawn —
+ * if the two disagreed, `/advisor` would report one model and the run would use
+ * another.
+ */
+function registryHasClaudeProvider(all: { provider: string }[]): boolean {
+	return all.some((m) => m?.provider?.toLowerCase() === "claude");
+}
+
+/**
+ * Whether the registry defines a provider literally named `claude`.
+ *
+ * A user-defined provider with that name owns `claude/*` specs; the Claude Code
+ * backend only claims them when nothing else answers to the prefix. Exported so
+ * the selection can blame the switch only when the switch is actually involved.
+ */
+export function registryOwnsClaudePrefix(ctx: ExtensionContext): boolean {
+	const registry = ctx.modelRegistry as unknown as RegistryRef;
+	const all = registry.getAvailable?.() ?? registry.getAll?.() ?? [];
+	return registryHasClaudeProvider(all);
+}
+
+/**
+ * Resolve a `/subagents` model default to a model. A `claude/*` spec is answered
+ * before the registry is consulted — no entry will ever exist for it, because
+ * the run is executed by the external `claude` CLI rather than a pi session, so
+ * treating it as an unknown registry model reports a working setup as stale.
+ *
+ * Everything else: exact `provider/modelId` first (what the picker writes), then
+ * a bare-id match, so a hand-written alias still works. Undefined when it does
+ * not resolve — callers report it as stale rather than failing the tool.
  */
 export function resolveSubagentDefaultModel(
 	input: string | undefined,
 	ctx: ExtensionContext,
 ): Model<Api> | undefined {
 	if (!input) return undefined;
-	const registry = ctx.modelRegistry as unknown as {
-		find(provider: string, id: string): Model<Api> | undefined;
-		getAvailable?(): { provider: string; id: string }[];
-		getAll?(): { provider: string; id: string }[];
-	};
+	const registry = ctx.modelRegistry as unknown as RegistryRef;
+	const all = registry.getAvailable?.() ?? registry.getAll?.() ?? [];
+	if (isClaudeCodeModelSpec(input) && !registryHasClaudeProvider(all) && isClaudeCodeEnabled(ctx.cwd)) {
+		return createClaudeCodeModel(input);
+	}
 	const slash = input.indexOf("/");
 	if (slash > 0) {
 		const found = registry.find(input.slice(0, slash), input.slice(slash + 1));
 		if (found) return found;
 	}
-	const all = registry.getAvailable?.() ?? registry.getAll?.() ?? [];
 	const match = all.find((m) => m.id === input || `${m.provider}/${m.id}` === input);
 	return match ? registry.find(match.provider, match.id) : undefined;
 }

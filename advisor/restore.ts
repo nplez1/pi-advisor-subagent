@@ -22,12 +22,14 @@ import {
 	ADVISOR_TOOL_NAME,
 	MSG_ADVISOR_DISABLED,
 	MSG_ADVISOR_UNCONFIGURED,
+	errBackendDisabled,
 	errModelUnavailable,
+	modelLabel,
 	msgAdvisorRestoredBoth,
 	msgAdvisorRestoredBothInactive,
 } from "./messages.js";
 import { isExecutorBlocked, setDisabledForModels } from "./policy.js";
-import { resolveAdvisorSelection } from "./selection.js";
+import { describeStage, resolveAdvisorSelection } from "./selection.js";
 
 /**
  * Module-local "already announced" latch. Pi fires `session_start` for every
@@ -67,19 +69,30 @@ export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): vo
 	}
 	if (!advisor.model) {
 		reconcileAdvisorTool(pi, ctx, { blocked: true });
-		notifyOnce(
-			advisor.modelKey ? errModelUnavailable(advisor.modelKey) : MSG_ADVISOR_UNCONFIGURED,
-			advisor.modelKey ? "warning" : "info",
-		);
+		// A switched-off backend and a key that no longer resolves are both
+		// "configured but unusable", and they need different remedies.
+		const message =
+			advisor.unavailable === "claude-code-disabled" && advisor.modelKey
+				? errBackendDisabled(advisor.modelKey)
+				: advisor.modelKey
+					? errModelUnavailable(advisor.modelKey)
+					: MSG_ADVISOR_UNCONFIGURED;
+		notifyOnce(message, advisor.modelKey ? "warning" : "info");
 		return;
 	}
 
-	const advisorLabel = `${advisor.model.provider}:${advisor.model.id}`;
+	const advisorLabel = modelLabel(advisor.model);
+	// An unusable compressor is still a CONFIGURED compressor: reporting it as
+	// unconfigured would send the executor to pick a model it already picked, and
+	// hide the switch that is actually stopping it. Same reason the off switch is
+	// named rather than described as a missing model.
 	const compressorLabel = compressor.disabled
 		? undefined
 		: compressor.model
-			? `${compressor.model.provider}:${compressor.model.id}`
-			: undefined;
+			? modelLabel(compressor.model)
+			: compressor.modelKey
+				? describeStage(compressor)
+				: undefined;
 	const compressorEffort = compressor.disabled ? undefined : compressor.effort;
 
 	if (isExecutorBlocked(ctx, pi.getThinkingLevel())) {

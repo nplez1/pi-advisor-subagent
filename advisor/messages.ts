@@ -5,6 +5,7 @@
  */
 
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
+import { isClaudeCodeModel } from "./claude-code.js";
 
 // Tool identity
 export const ADVISOR_TOOL_NAME = "advisor";
@@ -42,10 +43,21 @@ export const MSG_STATUS_DISABLED = "disabled in /subagents";
 export const MSG_STATUS_UNCONFIGURED = "not configured — set it in /subagents";
 export const MSG_STATUS_HINT = "models and reasoning levels live in /subagents";
 export const msgStageUnavailable = (key: string) => `${key} (not in the model registry)`;
+export const msgStageBackendDisabled = (key: string) =>
+	`${key} (Claude Code backend disabled — pick a provider model, or turn it back on in /agents → Settings)`;
 export const msgStageStatus = (label: string, state: string, effort: ThinkingLevel | undefined) =>
 	`${label}: ${state}${effort ? `, ${effort}` : ""}`;
 export const msgAdvisorStatus = (advisor: string, compressor: string, inactive: boolean) =>
 	`${advisor} • ${compressor}${inactive ? " (inactive for current executor)" : ""}`;
+
+/**
+ * How a resolved stage is named in every report. pi models keep the plugin's
+ * `provider:id` form; a `claude/*` backend keeps its slash spec, because that is
+ * the only spelling it has — `claude:opus` is what nothing else will accept, and
+ * the value the user sets in /subagents is `claude/opus`.
+ */
+export const modelLabel = (model: { provider: string; id: string; claudeCodeBackend?: boolean }) =>
+	isClaudeCodeModel(model) ? `${model.provider}/${model.id}` : `${model.provider}:${model.id}`;
 
 // Errors (static)
 export const ERR_NO_MODEL =
@@ -73,6 +85,11 @@ export const errNoApiKeyDetail = (provider: string) => `no API key for ${provide
 export const errCallFailed = (err: string | undefined) => `Advisor call failed: ${err ?? ERR_UNKNOWN}`;
 export const errCallThrew = (msg: string) => `Advisor call threw: ${msg}`;
 export const errModelUnavailable = (key: string) => `Previously configured advisor model ${key} is no longer available`;
+export const errBackendDisabled = (key: string) =>
+	`Advisor model ${key} runs on the Claude Code CLI, which is disabled on this machine (claudeCode: false in subagents.json — /agents → Settings → Claude Code). Set rpiv-advisor to a provider model in /subagents — the same Claude models are usually reachable there through Copilot or Anthropic — or turn the backend back on.`;
+export const errCompressorBackendDisabled = (key: string) =>
+	`Compressor model ${key} runs on the Claude Code CLI, which is disabled on this machine (claudeCode: false in subagents.json — /agents → Settings → Claude Code), so the advisor context cannot be built. Set rpiv-compressor to a provider model in /subagents, or turn the backend back on.`;
+export const ERR_BACKEND_DISABLED_DETAIL = "claude code backend disabled";
 export const msgAdvisorRestored = (label: string, effort: ThinkingLevel | undefined) =>
 	`Advisor restored: ${label}${effort ? `, ${effort}` : ""}`;
 export const msgAdvisorRestoredInactive = (label: string, effort: ThinkingLevel | undefined) =>

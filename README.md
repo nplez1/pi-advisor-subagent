@@ -64,6 +64,26 @@ judgment. To turn it back off, run `/advisor` and choose **No advisor**.
 - **Skip it when you're already on a strong model** — list executor models in `disabledForModels` to strip the tool for them, optionally only at or above a reasoning-effort threshold. It strips and re-adds live as you switch model or effort mid-session.
 - **Off costs nothing** — with no reviewer selected the tool is stripped from the active set, so its prompt text never enters the system prompt at all.
 
+## Models come from `/subagents`
+
+Both stages' model and effort are read from pi-subagents' `agentOverrides` in `subagents.json` — `/subagents` is the writer, this plugin reads it live, so the reported model is always the one that runs. `advisor.json` keeps only what `/subagents` cannot express: `guidance` and `disabledForModels`.
+
+Any pi model works for either stage, and so does a **Claude Code backend** spec — `claude/opus`, `claude/sonnet`, `claude/haiku`, or a full id such as `claude/claude-sonnet-4-5-20250929`:
+
+```json
+{ "agentOverrides": { "rpiv-advisor": { "model": "claude/opus", "thinking": "high" } } }
+```
+
+Those specs are not registry models: pi-subagents runs them on the external `claude` CLI, so they are valid even though neither `enabledModels` nor `models-store.json` lists them. `/advisor`, the session-start notice and the tool result all name them as `claude/opus`, and `advisor()` never asks pi for an API key on their behalf — the CLI authenticates itself. If pi-subagents' [`scopeModels`](../pi-subagents#model-scope) is on, `claude/*` must also be listed in its allowed set — the allowlist cannot see these models any other way, and an unlisted one is refused at spawn.
+
+### Turning the backend off
+
+pi-subagents' `claudeCode` switch applies here too (`subagents.json`, or `/agents` → Settings → Claude Code). On a machine that cannot run the CLI, set `"claudeCode": false`: a stage still pointing at `claude/opus` is then reported as unusable with the switch named — instead of being restored as working and failing at spawn — and `advisor()` refuses rather than letting the spec resolve to some other model. Both sides read the same two files, and pi-subagents re-reads them rather than caching what it saw at startup, so a hand edit cannot make this report and the spawn disagree. Point the stage at a provider model instead; the same Claude models are usually reachable through Copilot, Anthropic or Bedrock:
+
+```json
+{ "agentOverrides": { "rpiv-advisor": { "model": "github-copilot/claude-opus-4-5", "thinking": "high" } } }
+```
+
 ## Configuration
 
 Settings live in `~/.config/rpiv-advisor/advisor.json` (or
@@ -128,6 +148,7 @@ reviewer's context depend on an invisible decision.
 | `No compressor model is configured, so the advisor context cannot be built.` comes back as the tool result | `compressorModelKey` is absent from `advisor.json` — the usual state for a config written before the pipeline existed | Run `/advisor` and complete all four steps |
 | `Advisor (<model>) has no API key available.` comes back as the tool result | Credentials for that provider no longer resolve | Re-authenticate that provider with `/login` |
 | `Advisor (<model>) is misconfigured: …` names the compressor | The compressor's provider is unauthenticated | Re-authenticate, or pick another compressor with `/advisor` |
+| `Advisor model claude/… runs on the Claude Code CLI, which is disabled on this machine` | `"claudeCode": false` in `subagents.json` on this machine | Set a provider model for `rpiv-advisor` in `/subagents`, or turn the backend back on (`/agents` → Settings → Claude Code) |
 | `Required pi-subagents profile is missing: …/rpiv-compressor.md` | The digest stage's agent profile is not linked | Re-create the symlink from `agents/rpiv-compressor.md` |
 | Guidance arrives with `Compression unavailable (…)` above it | The compressor subagent failed; the reviewer got the chronology alone | Nothing to fix for that call — the guard held. Check the compressor model if it recurs |
 | `/advisor requires interactive mode` | Running under `pi --print …` or RPC | Run Pi interactively |

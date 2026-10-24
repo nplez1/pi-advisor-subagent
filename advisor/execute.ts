@@ -15,7 +15,7 @@
  * and keeps going rather than crashing the turn.
  */
 
-import type { Message, StopReason, ThinkingLevel, Usage } from "@earendil-works/pi-ai";
+import type { Api, Message, Model, StopReason, ThinkingLevel, Usage } from "@earendil-works/pi-ai";
 import {
 	type AgentToolResult,
 	type AgentToolUpdateCallback,
@@ -24,6 +24,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { isClaudeCodeModel } from "./claude-code.js";
 import { compressContext } from "./compress.js";
 import { stripInflightAdvisorCall } from "./context.js";
 import { getInventoryMessage } from "./inventory.js";
@@ -41,9 +42,13 @@ import {
 	ERR_NO_MODEL_SELECTED,
 	ERR_QUESTION_REQUIRED,
 	ERR_QUESTION_REQUIRED_DETAIL,
+	ERR_BACKEND_DISABLED_DETAIL,
+	errBackendDisabled,
 	errCallFailed,
 	errCallThrew,
+	errCompressorBackendDisabled,
 	errMisconfigured,
+	modelLabel,
 	msgCompressing,
 	msgConsulting,
 } from "./messages.js";
@@ -118,6 +123,21 @@ function buildErrorResult(
 	return buildAdvisorResult({ text: userText, effort, advisorLabel, errorMessage });
 }
 
+/**
+ * Pre-flight auth for one stage. A `claude/*` stage is authenticated by the
+ * Claude Code CLI (its own login / `setup-token`), not by pi's provider auth —
+ * the registry can never hold a key for it, so asking would fail a stage that
+ * works. Everything else is checked as before, to fail before the spawn.
+ */
+async function authorizeStage(
+	ctx: ExtensionContext,
+	model: Model<Api>,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+	if (isClaudeCodeModel(model)) return { ok: true };
+	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	return auth.ok ? { ok: true } : { ok: false, error: auth.error };
+}
+
 /** One line describing what was actually sent, so the split is never invisible. */
 function describePayload(stats: PayloadStats, compression: "ok" | "failed"): string {
 	const segments = [
@@ -157,9 +177,19 @@ export async function executeAdvisor(
 
 	const advisor = selection.advisor.model;
 	if (!advisor) {
+		// A switched-off backend is not an unconfigured stage: the model is set, and
+		// naming the switch is the only refusal that leads to a fix.
+		if (selection.advisor.unavailable === "claude-code-disabled" && selection.advisor.modelKey) {
+			return buildErrorResult(
+				undefined,
+				effort,
+				errBackendDisabled(selection.advisor.modelKey),
+				ERR_BACKEND_DISABLED_DETAIL,
+			);
+		}
 		return buildErrorResult(undefined, effort, ERR_NO_MODEL, ERR_NO_MODEL_SELECTED);
 	}
-	const advisorLabel = `${advisor.provider}:${advisor.id}`;
+	const advisorLabel = modelLabel(advisor);
 
 	// Refusal, not degradation: with no compressor configured, the pipeline
 	// cannot build the reviewer's context at all. Silently substituting some
@@ -168,9 +198,17 @@ export async function executeAdvisor(
 	// (see below) — the distinction is configuration versus failure.
 	const compressor = selection.compressor.disabled ? undefined : selection.compressor.model;
 	if (!compressor) {
+		if (selection.compressor.unavailable === "claude-code-disabled" && selection.compressor.modelKey) {
+			return buildErrorResult(
+				advisorLabel,
+				effort,
+				errCompressorBackendDisabled(selection.compressor.modelKey),
+				ERR_BACKEND_DISABLED_DETAIL,
+			);
+		}
 		return buildErrorResult(advisorLabel, effort, ERR_NO_COMPRESSOR, ERR_NO_COMPRESSOR_DETAIL);
 	}
-	const compressorLabel = `${compressor.provider}:${compressor.id}`;
+	const compressorLabel = modelLabel(compressor);
 
 	const question = params?.question?.trim();
 	if (!question) {
@@ -178,11 +216,11 @@ export async function executeAdvisor(
 	}
 
 	try {
-		const advisorAuth = await ctx.modelRegistry.getApiKeyAndHeaders(advisor);
+		const advisorAuth = await authorizeStage(ctx, advisor);
 		if (!advisorAuth.ok) {
 			return buildErrorResult(advisorLabel, effort, errMisconfigured(advisorLabel, advisorAuth.error), advisorAuth.error);
 		}
-		const compressorAuth = await ctx.modelRegistry.getApiKeyAndHeaders(compressor);
+		const compressorAuth = await authorizeStage(ctx, compressor);
 		if (!compressorAuth.ok) {
 			return buildErrorResult(
 				advisorLabel,

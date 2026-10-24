@@ -14,27 +14,9 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-	MSG_REQUIRES_INTERACTIVE,
-	MSG_STATUS_DISABLED,
-	MSG_STATUS_HINT,
-	MSG_STATUS_UNCONFIGURED,
-	msgAdvisorStatus,
-	msgStageStatus,
-	msgStageUnavailable,
-} from "./messages.js";
+import { MSG_REQUIRES_INTERACTIVE, MSG_STATUS_HINT, msgAdvisorStatus, msgStageStatus } from "./messages.js";
 import { isExecutorBlocked } from "./policy.js";
-import { resolveAdvisorSelection, type StageSelection } from "./selection.js";
-
-/** How one stage reads in the report. */
-function describe(stage: StageSelection): string {
-	if (stage.disabled) return MSG_STATUS_DISABLED;
-	if (stage.model) return `${stage.model.provider}:${stage.model.id}`;
-	// A configured but unknown model is a stale setting, not an empty one; naming
-	// the key is what lets the report point at the row to fix.
-	if (stage.modelKey) return msgStageUnavailable(stage.modelKey);
-	return MSG_STATUS_UNCONFIGURED;
-}
+import { describeStage, resolveAdvisorSelection } from "./selection.js";
 
 export function registerAdvisorCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("advisor", {
@@ -49,12 +31,12 @@ export function registerAdvisorCommand(pi: ExtensionAPI): void {
 			const text = msgAdvisorStatus(
 				msgStageStatus(
 					"Advisor",
-					describe(selection.advisor),
+					describeStage(selection.advisor),
 					selection.advisor.disabled ? undefined : selection.advisor.effort,
 				),
 				msgStageStatus(
 					"Compressor",
-					describe(selection.compressor),
+					describeStage(selection.compressor),
 					selection.compressor.disabled ? undefined : selection.compressor.effort,
 				),
 				isExecutorBlocked(ctx, pi.getThinkingLevel()),

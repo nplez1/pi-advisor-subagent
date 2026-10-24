@@ -12,7 +12,8 @@
  *   messages   — tool identity, sentinels, effort vocabulary, all strings
  *   config     — persisted policy (guidance + disabledForModels)
  *   selection  — the resolved model/effort/enabled for both stages, from /subagents
- *   subagent-defaults — reads pi-subagents' agentOverrides
+ *   subagent-defaults — reads pi-subagents' agentOverrides (+ the claudeCode switch)
+ *   claude-code — the `claude/*` backend spec and its synthetic model
  *   policy     — disabledForModels blocklist + blocked predicates
  *   inventory  — globalThis tool-inventory cache + serializer
  *   context    — branch-message massaging
@@ -33,6 +34,7 @@ export { loadAdvisorConfig, validateDisabledForModels, validateEffort } from "./
 export { ensureUserTailForAdvisor, stripInflightAdvisorCall } from "./context.js";
 export {
 	registerAdvisorBeforeAgentStart,
+	registerClaudeCodeSettingSync,
 	registerModelSelectHandler,
 	registerThinkingLevelSelectHandler,
 } from "./handlers.js";
@@ -49,5 +51,6 @@ export {
 	buildUserRequests,
 	isPriorAdvisorResult,
 } from "./select.js";
-export { resolveAdvisorSelection, type AdvisorSelection, type StageSelection } from "./selection.js";
+export { clearPublishedClaudeCode, setClaudeCodeFromSettings } from "./subagent-defaults.js";
+export { describeStage, resolveAdvisorSelection, type AdvisorSelection, type StageSelection } from "./selection.js";
 export { runChildAgent, serializeTranscript } from "./subagent.js";

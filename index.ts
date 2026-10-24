@@ -20,11 +20,13 @@ import {
 	registerAdvisorCommand,
 	registerAdvisorSessionStart,
 	registerAdvisorTool,
+	registerClaudeCodeSettingSync,
 	registerModelSelectHandler,
 	registerThinkingLevelSelectHandler,
 } from "./advisor/index.js";
 
 export default function (pi: ExtensionAPI) {
+	registerClaudeCodeSettingSync(pi);
 	registerAdvisorTool(pi);
 	registerAdvisorCommand(pi);
 	registerAdvisorBeforeAgentStart(pi);

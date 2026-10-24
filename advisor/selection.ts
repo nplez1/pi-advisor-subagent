@@ -24,8 +24,19 @@ import {
 	COMPRESSOR_AGENT_TYPE,
 	EFFORT_ORDINAL,
 	type GradedEffort,
+	MSG_STATUS_DISABLED,
+	MSG_STATUS_UNCONFIGURED,
+	modelLabel,
+	msgStageBackendDisabled,
+	msgStageUnavailable,
 } from "./messages.js";
-import { readSubagentDefault, resolveSubagentDefaultModel } from "./subagent-defaults.js";
+import {
+	readSubagentDefault,
+	isClaudeCodeEnabled,
+	registryOwnsClaudePrefix,
+	resolveSubagentDefaultModel,
+} from "./subagent-defaults.js";
+import { isClaudeCodeModelSpec } from "./claude-code.js";
 
 /** One stage's resolved setting. Shared shape: both stages configure alike. */
 export interface StageSelection {
@@ -37,6 +48,12 @@ export interface StageSelection {
 	modelKey?: string;
 	/** `enabled: false` in agentOverrides — the off switch. */
 	disabled: boolean;
+	/**
+	 * Why a configured `modelKey` did not resolve, when it did not. The two causes
+	 * need different remedies — a stale key versus a backend switched off on this
+	 * machine — so they are distinguished here rather than at each report.
+	 */
+	unavailable?: "registry" | "claude-code-disabled";
 }
 
 export interface AdvisorSelection {
@@ -66,9 +83,36 @@ function resolveStage(agentType: string, ctx: ExtensionContext): StageSelection 
 	if (entry.model !== undefined) stage.modelKey = entry.model;
 	const model = resolveSubagentDefaultModel(entry.model, ctx);
 	if (model) stage.model = model;
+	else if (stage.modelKey) {
+		// A `claude/*` spec can fail for two reasons and only one of them is the
+		// switch: when a registry provider named `claude` owns the prefix, the
+		// switch plays no part in this spec failing to resolve.
+		const backendOff =
+			isClaudeCodeModelSpec(stage.modelKey) &&
+			!registryOwnsClaudePrefix(ctx) &&
+			!isClaudeCodeEnabled(ctx.cwd);
+		stage.unavailable = stage.disabled ? undefined : backendOff ? "claude-code-disabled" : "registry";
+	}
 	const effort = gradedEffortOf(entry.thinking);
 	if (effort) stage.effort = effort;
 	return stage;
+}
+
+/**
+ * How one stage reads in any report.
+ *
+ * One function because `/advisor` and the session-start notice must not phrase
+ * the same state differently: a stage that is off, unset, stale, or blocked by a
+ * switched-off backend needs its own words and its own remedy.
+ */
+export function describeStage(stage: StageSelection): string {
+	if (stage.disabled) return MSG_STATUS_DISABLED;
+	if (stage.model) return modelLabel(stage.model);
+	// A configured but unusable model is not an empty one; naming the key is what
+	// lets the report point at the row to fix.
+	if (stage.unavailable === "claude-code-disabled") return msgStageBackendDisabled(stage.modelKey ?? "");
+	if (stage.modelKey) return msgStageUnavailable(stage.modelKey);
+	return MSG_STATUS_UNCONFIGURED;
 }
 
 export function resolveAdvisorSelection(ctx: ExtensionContext): AdvisorSelection {
