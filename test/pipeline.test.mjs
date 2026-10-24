@@ -1,67 +1,60 @@
 /**
- * Package-level tests: the module graph loads, the four-step selection
- * round-trips through advisor.json, and session_start restores both stages.
+ * Package-level tests: the module graph loads, `/subagents` is the single source
+ * for both pipeline stages, and session_start activates the tool to match it.
  *
- * `/advisor` is now the only way to unblock `advisor()` — the call refuses until
- * a compressor is configured — so a load error in command.ts or a mistake in the
- * restore path would leave the tool unusable with no in-band remedy. These tests
- * exist to catch that class of failure outside Pi.
+ * These exist because the pipeline is configured from *outside* this plugin now.
+ * A mistake in the resolution path or the restore decision would leave the tool
+ * either unusable with no in-band remedy or silently running a model the menu
+ * never showed, and neither is visible outside Pi.
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-// Must be set before the modules load: config.ts resolves its path at import time.
+// Both must be set before the modules load: config.ts resolves its path at
+// import time, and getAgentDir() decides where the global overrides come from.
 const xdg = mkdtempSync(join(tmpdir(), "rpiv-advisor-test-"));
+const agentDir = mkdtempSync(join(tmpdir(), "rpiv-advisor-agent-"));
+const projectDir = mkdtempSync(join(tmpdir(), "rpiv-advisor-project-"));
 process.env.XDG_CONFIG_HOME = xdg;
+process.env.PI_CODING_AGENT_DIR = agentDir;
+
+mkdirSync(join(projectDir, ".pi"), { recursive: true });
 
 const barrel = await import("../advisor/index.ts");
 
 const {
 	__resetAdvisorAnnounced,
-	getAdvisorModel,
-	getCompressorEffort,
-	getCompressorModel,
 	loadAdvisorConfig,
 	restoreAdvisorState,
-	saveAdvisorConfig,
-	setAdvisorModel,
-	setCompressorModel,
+	resolveAdvisorSelection,
+	validateDisabledForModels,
 	validateEffort,
 } = barrel;
 
 test.after(() => {
 	rmSync(xdg, { recursive: true, force: true });
+	rmSync(agentDir, { recursive: true, force: true });
+	rmSync(projectDir, { recursive: true, force: true });
 });
 
-test("each picker stage has its own panel identity", async () => {
-	const { STAGE_HEADERS } = await import("../advisor-ui.ts");
-	const advisor = STAGE_HEADERS.advisor;
-	const compressor = STAGE_HEADERS.compressor;
+const MODELS = [
+	{ provider: "github-copilot", id: "gpt-6-sol", name: "Sol" },
+	{ provider: "deepseek", id: "deepseek-flash", name: "Flash" },
+];
 
-	// The bug this guards: every picker rendered the same "Advisor Tool" panel
-	// with prose about "the advisor", so step 3 was visually identical to step 1
-	// and step 4 to step 2. The four-step flow read as the command asking the same
-	// question twice.
-	assert.notEqual(advisor.modelTitle, compressor.modelTitle);
-	assert.notEqual(advisor.effortTitle, compressor.effortTitle);
-	assert.notEqual(advisor.effortProse, compressor.effortProse);
+/** Write the machine's `/subagents` state — the only store these tests read. */
+function writeOverrides(agentOverrides) {
+	writeFileSync(join(agentDir, "subagents.json"), JSON.stringify({ agentOverrides }), "utf-8");
+}
 
-	// No string may be shared across stages at all — the strongest form of the
-	// invariant, and what catches a copy-paste slip during a reword.
-	const stringsFor = (header) => [header.modelTitle, header.effortTitle, ...header.modelProse, header.effortProse];
-	const shared = stringsFor(advisor).filter((s) => stringsFor(compressor).includes(s));
-	assert.deepEqual(shared, [], `stages share panel text: ${shared.join(" | ")}`);
-
-	// Every stage must name itself, so the panel is unambiguous on screen.
-	for (const stage of ["advisor", "compressor"]) {
-		const text = stringsFor(STAGE_HEADERS[stage]).join(" ").toLowerCase();
-		assert.match(text, new RegExp(stage), `stage "${stage}" never names itself in its own panel`);
-	}
-});
+const BOTH_STAGES = {
+	"rpiv-advisor": { model: "github-copilot/gpt-6-sol", thinking: "high", enabled: true },
+	"rpiv-compressor": { model: "deepseek/deepseek-flash", thinking: "low" },
+};
 
 test("the module graph loads and exports the pipeline surface", () => {
 	for (const name of [
@@ -69,14 +62,13 @@ test("the module graph loads and exports the pipeline surface", () => {
 		"registerAdvisorCommand",
 		"registerAdvisorSessionStart",
 		"restoreAdvisorState",
-		"saveAdvisorConfig",
+		"resolveAdvisorSelection",
 		"buildAdvisorPayload",
 		"buildGroundTruth",
 		"serializeTranscript",
 		"runChildAgent",
-		"getCompressorModel",
-		"getCompressorEffort",
 		"validateEffort",
+		"setDisabledForModels",
 	]) {
 		assert.ok(typeof barrel[name] === "function", `missing export: ${name}`);
 	}
@@ -87,57 +79,22 @@ test("the module graph loads and exports the pipeline surface", () => {
 	assert.match(barrel.DEFAULT_PROMPT_GUIDELINES[0], /raw transcript/);
 });
 
-test("a four-step selection round-trips through advisor.json", () => {
-	assert.equal(
-		saveAdvisorConfig({
-			modelKey: "github-copilot/gpt-6-sol",
-			effort: "high",
-			compressorModelKey: "deepseek/deepseek-flash",
-			compressorEffort: "low",
-		}),
-		true,
-	);
-
-	const config = loadAdvisorConfig();
-	assert.equal(config.modelKey, "github-copilot/gpt-6-sol");
-	assert.equal(config.effort, "high");
-	assert.equal(config.compressorModelKey, "deepseek/deepseek-flash");
-	assert.equal(config.compressorEffort, "low");
-});
-
-test("hand-edited keys survive a save from /advisor", () => {
-	saveAdvisorConfig({ modelKey: "a/b", compressorModelKey: "c/d" });
-	const path = join(xdg, "rpiv-advisor", "advisor.json");
-	const current = JSON.parse(readFileSync(path, "utf8"));
+test("advisor.json still owns guidance and the blocklist, and nothing else", () => {
+	mkdirSync(join(xdg, "rpiv-advisor"), { recursive: true });
 	writeFileSync(
-		path,
+		join(xdg, "rpiv-advisor", "advisor.json"),
 		JSON.stringify({
-			...current,
-			guidance: { promptSnippet: "custom" },
-			disabledForModels: ["x/y"],
+			guidance: { promptSnippet: "custom snippet" },
+			disabledForModels: ["x/y", { model: "a/b", minEffort: "high" }],
+			// Legacy key: ignored on read, migrated by install.sh, never consulted here.
+			modelKey: "legacy/should-be-ignored",
 		}),
 	);
 
-	saveAdvisorConfig({ modelKey: "e/f", compressorModelKey: "g/h" });
-	const after = JSON.parse(readFileSync(path, "utf8"));
-	assert.equal(after.guidance.promptSnippet, "custom");
-	assert.deepEqual(after.disabledForModels, ["x/y"]);
-});
-
-test("an empty selection clears every pipeline key", () => {
-	saveAdvisorConfig({
-		modelKey: "a/b",
-		effort: "high",
-		compressorModelKey: "c/d",
-		compressorEffort: "low",
-	});
-	saveAdvisorConfig({});
-
 	const config = loadAdvisorConfig();
-	assert.equal(config.modelKey, undefined);
-	assert.equal(config.effort, undefined);
-	assert.equal(config.compressorModelKey, undefined);
-	assert.equal(config.compressorEffort, undefined);
+	assert.equal(config.guidance.promptSnippet, "custom snippet");
+	assert.deepEqual(validateDisabledForModels(config.disabledForModels), ["x/y", { model: "a/b", minEffort: "high" }]);
+	assert.equal(config.modelKey, "legacy/should-be-ignored", "the legacy key is still readable, just unused");
 });
 
 test("validateEffort drops levels the ordinal cannot rank", () => {
@@ -147,17 +104,44 @@ test("validateEffort drops levels the ordinal cannot rank", () => {
 	assert.equal(validateEffort(42, "compressorEffort"), undefined);
 });
 
-function makeEnv({ models, active = [] }) {
+test("both stages resolve from agentOverrides, including the off switch", () => {
+	writeOverrides(BOTH_STAGES);
+
+	const selection = resolveAdvisorSelection({ cwd: projectDir, modelRegistry: registry() });
+	assert.equal(selection.advisor.model?.id, "gpt-6-sol");
+	assert.equal(selection.advisor.effort, "high");
+	assert.equal(selection.advisor.disabled, false);
+	assert.equal(selection.compressor.model?.id, "deepseek-flash");
+	assert.equal(selection.compressor.effort, "low");
+});
+
+test("`off` resolves to no effort rather than an unrankable level", () => {
+	writeOverrides({ "rpiv-advisor": { model: "github-copilot/gpt-6-sol", thinking: "off" } });
+
+	const selection = resolveAdvisorSelection({ cwd: projectDir, modelRegistry: registry() });
+	assert.equal(selection.advisor.model?.id, "gpt-6-sol");
+	assert.equal(selection.advisor.effort, undefined);
+});
+
+function registry(models = MODELS) {
+	return {
+		find: (provider, modelId) => models.find((m) => m.provider === provider && m.id === modelId),
+		getAvailable: () => models,
+	};
+}
+
+function makeEnv({ active = [] } = {}) {
 	const notifications = [];
 	const activeTools = [...active];
 	return {
 		notifications,
 		activeTools,
 		ctx: {
+			cwd: projectDir,
 			hasUI: true,
 			model: undefined,
 			ui: { notify: (msg, level) => notifications.push({ msg, level }) },
-			modelRegistry: { find: (provider, modelId) => models.find((m) => m.provider === provider && m.id === modelId) },
+			modelRegistry: registry(),
 		},
 		pi: {
 			getThinkingLevel: () => "high",
@@ -170,58 +154,62 @@ function makeEnv({ models, active = [] }) {
 	};
 }
 
-const MODELS = [
-	{ provider: "github-copilot", id: "gpt-6-sol", name: "Sol" },
-	{ provider: "deepseek", id: "deepseek-flash", name: "Flash" },
-];
-
-test("session_start restores both stages and activates the tool", () => {
-	saveAdvisorConfig({
-		modelKey: "github-copilot/gpt-6-sol",
-		effort: "high",
-		compressorModelKey: "deepseek/deepseek-flash",
-		compressorEffort: "low",
-	});
+test("session_start activates the tool and reports both stages", () => {
+	writeOverrides(BOTH_STAGES);
 	__resetAdvisorAnnounced();
-	setAdvisorModel(undefined);
-	setCompressorModel(undefined);
 
-	const env = makeEnv({ models: MODELS, active: ["read"] });
+	const env = makeEnv({ active: ["read"] });
 	restoreAdvisorState(env.ctx, env.pi);
 
-	assert.equal(getAdvisorModel()?.id, "gpt-6-sol");
-	assert.equal(getCompressorModel()?.id, "deepseek-flash");
-	assert.equal(getCompressorEffort(), "low");
 	assert.ok(env.activeTools.includes("advisor"));
-	assert.match(env.notifications[0].msg, /Advisor restored: github-copilot\/gpt-6-sol, high/);
-	assert.match(env.notifications[0].msg, /Compressor: deepseek\/deepseek-flash, low/);
+	assert.match(env.notifications[0].msg, /Advisor restored: github-copilot:gpt-6-sol, high/);
+	assert.match(env.notifications[0].msg, /Compressor: deepseek:deepseek-flash, low/);
 });
 
-test("a stale compressor key clears the stage and says so, without substituting a model", () => {
-	saveAdvisorConfig({ modelKey: "github-copilot/gpt-6-sol", compressorModelKey: "gone/model" });
+test("a missing compressor does not strip the tool, and says what is missing", () => {
+	writeOverrides({ "rpiv-advisor": { model: "github-copilot/gpt-6-sol", thinking: "high" } });
 	__resetAdvisorAnnounced();
-	setCompressorModel({ provider: "stale", id: "leftover" });
 
-	const env = makeEnv({ models: MODELS, active: [] });
+	const env = makeEnv();
 	restoreAdvisorState(env.ctx, env.pi);
 
-	assert.equal(getCompressorModel(), undefined, "a stale selection must not survive as a silent fallback");
+	// The refusal at call time is what tells the executor to fix it, so
+	// withholding the tool would hide the remedy behind an absence.
+	assert.ok(env.activeTools.includes("advisor"));
 	assert.match(env.notifications[0].msg, /no compressor configured/);
-	// The tool still activates: the refusal at call time is what tells the
-	// executor to run /advisor, so withholding the tool would hide the remedy.
-	assert.ok(env.activeTools.includes("advisor"));
 });
 
-test("no advisor model strips the tool and clears both stages", () => {
-	saveAdvisorConfig({});
+test("enabled:false strips the tool and reports it as a choice", () => {
+	writeOverrides({ ...BOTH_STAGES, "rpiv-advisor": { ...BOTH_STAGES["rpiv-advisor"], enabled: false } });
 	__resetAdvisorAnnounced();
-	setAdvisorModel({ provider: "leftover", id: "a" });
-	setCompressorModel({ provider: "leftover", id: "b" });
 
-	const env = makeEnv({ models: MODELS, active: ["advisor", "read"] });
+	const env = makeEnv({ active: ["advisor", "read"] });
 	restoreAdvisorState(env.ctx, env.pi);
 
 	assert.ok(!env.activeTools.includes("advisor"));
-	assert.equal(getAdvisorModel(), undefined);
-	assert.equal(getCompressorModel(), undefined);
+	assert.match(env.notifications[0].msg, /Advisor disabled/);
+});
+
+test("no advisor model strips the tool and points at /subagents", () => {
+	writeOverrides({});
+	__resetAdvisorAnnounced();
+
+	const env = makeEnv({ active: ["advisor", "read"] });
+	restoreAdvisorState(env.ctx, env.pi);
+
+	assert.ok(!env.activeTools.includes("advisor"));
+	assert.match(env.notifications[0].msg, /No advisor model is configured/);
+	assert.match(env.notifications[0].msg, /\/subagents/);
+});
+
+test("a configured model that is gone from the registry strips the tool and names it", () => {
+	writeOverrides({ "rpiv-advisor": { model: "gone/model" } });
+	__resetAdvisorAnnounced();
+
+	const env = makeEnv({ active: ["advisor", "read"] });
+	restoreAdvisorState(env.ctx, env.pi);
+
+	assert.ok(!env.activeTools.includes("advisor"));
+	assert.equal(env.notifications[0].level, "warning");
+	assert.match(env.notifications[0].msg, /gone\/model is no longer available/);
 });

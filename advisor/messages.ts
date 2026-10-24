@@ -21,15 +21,6 @@ export const COMPRESSOR_LABEL = "Compressor";
 // question; without it the compressor has nothing to target.
 export const QUESTION_PARAM = "question";
 
-// Selector sentinels — double-underscore form is collision-proof against real provider:id keys
-export const NO_ADVISOR_VALUE = "__no_advisor__";
-export const NO_COMPRESSOR_VALUE = "__no_compressor__";
-export const OFF_VALUE = "__off__";
-
-// Picker row labels for the two "none" sentinels above.
-export const NO_ADVISOR_LABEL = "No advisor";
-export const NO_COMPRESSOR_LABEL = "No compressor";
-
 // Effort levels. GradedEffort is the ordinal's domain: the graded levels only,
 // never "off" — an "off" element would corrupt the indexOf ranking that
 // minEffort thresholds compare against. Today pi-ai's ThinkingLevel already
@@ -37,25 +28,33 @@ export const NO_COMPRESSOR_LABEL = "No compressor";
 // exclusion structural if the upstream universe ever re-widens.
 export type GradedEffort = Exclude<ThinkingLevel, "off">;
 export const EFFORT_ORDINAL: readonly GradedEffort[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
-export const DEFAULT_EFFORT: GradedEffort = "high";
-export const RECOMMENDED_EFFORT_SUFFIX = "  (recommended)";
-
-// UI — labels used by command flow; panel prose/titles live in advisor-ui.ts
-export const CHECKMARK = " ✓";
 
 // Messages (static)
 export const MSG_ADVISOR_DISABLED = "Advisor disabled";
 export const MSG_REQUIRES_INTERACTIVE = "/advisor requires interactive mode";
 export const MSG_ADVISOR_NUDGE = "Please advise on the executor's situation above.";
-export const MSG_EFFORT_NOT_SET = "Effort not set — advisor uses the model default";
-export const MSG_SELECTION_ABANDONED =
-	"Advisor configuration abandoned at the compressor step — nothing was saved. The advisor model and the compressor are one pipeline, so the four-step /advisor flow applies them together.";
-export const MSG_PERSIST_FAILED = "Failed to save advisor selection — selection not persisted";
+export const MSG_ADVISOR_UNCONFIGURED =
+	"No advisor model is configured. Set one in /subagents (agentOverrides → rpiv-advisor).";
+
+// Status report (/advisor). Both stages are named because a compressor you
+// cannot see is a compressor you forget is driving the payload.
+export const MSG_STATUS_DISABLED = "disabled in /subagents";
+export const MSG_STATUS_UNCONFIGURED = "not configured — set it in /subagents";
+export const MSG_STATUS_HINT = "models and reasoning levels live in /subagents";
+export const msgStageUnavailable = (key: string) => `${key} (not in the model registry)`;
+export const msgStageStatus = (label: string, state: string, effort: ThinkingLevel | undefined) =>
+	`${label}: ${state}${effort ? `, ${effort}` : ""}`;
+export const msgAdvisorStatus = (advisor: string, compressor: string, inactive: boolean) =>
+	`${advisor} • ${compressor}${inactive ? " (inactive for current executor)" : ""}`;
 
 // Errors (static)
-export const ERR_NO_MODEL = "No advisor model is configured. The user can enable one with the /advisor command.";
+export const ERR_NO_MODEL =
+	"No advisor model is configured. The user can set one in /subagents (agentOverrides → rpiv-advisor).";
 export const ERR_NO_COMPRESSOR =
-	"No compressor model is configured, so the advisor context cannot be built. Run /advisor to select one — the four-step flow sets the advisor model, its effort, the compressor model, and its effort.";
+	"No compressor model is configured, so the advisor context cannot be built. Set one in /subagents (agentOverrides → rpiv-compressor).";
+export const ERR_ADVISOR_DISABLED =
+	"The advisor is switched off in /subagents (agentOverrides → rpiv-advisor → enabled = false). Re-enable it there to use advisor().";
+export const ERR_ADVISOR_DISABLED_DETAIL = "advisor disabled in /subagents";
 export const ERR_NO_COMPRESSOR_DETAIL = "no compressor model selected";
 export const ERR_QUESTION_REQUIRED =
 	"advisor() needs a `question`. State the specific decision, assumption, or problem you want reviewed — the reviewer receives a compressed digest of your context plus this question, so a vague call gets vague guidance.";
@@ -73,7 +72,6 @@ export const errNoApiKey = (label: string) => `Advisor (${label}) has no API key
 export const errNoApiKeyDetail = (provider: string) => `no API key for ${provider}`;
 export const errCallFailed = (err: string | undefined) => `Advisor call failed: ${err ?? ERR_UNKNOWN}`;
 export const errCallThrew = (msg: string) => `Advisor call threw: ${msg}`;
-export const errSelectionNotFound = (choice: string) => `Advisor selection not found: ${choice}`;
 export const errModelUnavailable = (key: string) => `Previously configured advisor model ${key} is no longer available`;
 export const msgAdvisorRestored = (label: string, effort: ThinkingLevel | undefined) =>
 	`Advisor restored: ${label}${effort ? `, ${effort}` : ""}`;
@@ -82,35 +80,17 @@ export const msgAdvisorRestoredInactive = (label: string, effort: ThinkingLevel 
 export const msgConsulting = (label: string, effort: ThinkingLevel | undefined) =>
 	`Consulting advisor (${label}${effort ? `, ${effort}` : ""})…`;
 export const msgCompressing = (label: string, effort: ThinkingLevel | undefined) =>
-	`Compressing context (${COMPRESSOR_LABEL}: ${label}${effort ? `, ${effort}` : ""})…`;// The four-step /advisor flow always configures both models, so the enable
-// notification names both — a compressor you cannot see is a compressor you
-// forget is driving the payload.
-const advisorPart = (label: string, effort: ThinkingLevel | undefined) =>
-	`Advisor: ${label}${effort ? `, ${effort}` : ""}`;
+	`Compressing context (${COMPRESSOR_LABEL}: ${label}${effort ? `, ${effort}` : ""})…`;
+// Restore-time variants. Both stages are reported, and the compressor is named
+// even when it is missing, because "no compressor configured" is the difference
+// between an advisor() call that works and one that refuses — silently omitting
+// it would leave the user guessing why the tool errors.
 const compressorPart = (label: string, effort: ThinkingLevel | undefined) =>
 	`Compressor: ${label}${effort ? `, ${effort}` : ""}`;
-export const msgAdvisorEnabled = (
-	advisorLabel: string,
-	advisorEffort: ThinkingLevel | undefined,
-	compressorLabel: string,
-	compressorEffort: ThinkingLevel | undefined,
-) => `${advisorPart(advisorLabel, advisorEffort)} • ${compressorPart(compressorLabel, compressorEffort)}`;
-export const msgAdvisorEnabledInactive = (
-	advisorLabel: string,
-	advisorEffort: ThinkingLevel | undefined,
-	compressorLabel: string,
-	compressorEffort: ThinkingLevel | undefined,
-) =>
-	`${msgAdvisorEnabled(advisorLabel, advisorEffort, compressorLabel, compressorEffort)} (inactive for current executor)`;
-
-// Restore-time variants. The compressor is reported even when it is missing,
-// because "no compressor configured" is the difference between an advisor() call
-// that works and one that refuses — silently omitting it would leave the user
-// guessing why the tool errors.
 const compressorStatus = (label: string | undefined, effort: ThinkingLevel | undefined) =>
 	label
 		? compressorPart(label, effort)
-		: "no compressor configured — advisor() refuses until you run /advisor";
+		: "no compressor configured — advisor() refuses until one is set in /subagents";
 export const msgAdvisorRestoredBoth = (
 	advisorLabel: string,
 	advisorEffort: ThinkingLevel | undefined,

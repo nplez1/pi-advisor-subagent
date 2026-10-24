@@ -1,37 +1,30 @@
 /**
- * config — persisted advisor config (~/.config/rpiv-advisor/advisor.json) and
- * the provider:id key codec. Owns the AdvisorConfig shape and load/validate/save.
- * The modelKey (join) / parseModelKey (split) inverse pair the codec relies on
- * lives in @juicesharp/rpiv-config.
+ * config — persisted advisor policy (~/.config/rpiv-advisor/advisor.json).
+ * Owns the two things pi-subagents' `agentOverrides` cannot express:
+ *
+ *   guidance            — the tool's promptSnippet / promptGuidelines overrides
+ *   disabledForModels   — the executor blocklist and its effort thresholds
+ *
+ * The model and reasoning selections are NOT here. They belong to
+ * `agentOverrides` in subagents.json, written by `/subagents` and read by
+ * selection.ts, so a stage has exactly one configurable home. Legacy
+ * `modelKey` / `compressorModelKey` / `effort` / `compressorEffort` keys are
+ * ignored on read; install.sh migrates them into agentOverrides once and then
+ * deletes them.
+ *
+ * The provider:id key codec (`modelKey` / `parseModelKey`) now lives only where
+ * it is used: selection.ts for resolution and messages for the blocklist.
  */
 
 import type { GuidanceFields } from "@juicesharp/rpiv-config";
-import { configPath, loadJsonConfigWithLegacyFallback, saveJsonConfig } from "@juicesharp/rpiv-config";
+import { loadJsonConfigWithLegacyFallback } from "@juicesharp/rpiv-config";
 import { EFFORT_ORDINAL, type GradedEffort } from "./messages.js";
-
-const ADVISOR_CONFIG_PATH = configPath("rpiv-advisor", "advisor.json");
 
 export type DisabledForModelsEntry = string | { model: string; minEffort?: GradedEffort };
 
 interface AdvisorConfig {
-	modelKey?: string;
-	effort?: GradedEffort;
-	compressorModelKey?: string;
-	compressorEffort?: GradedEffort;
 	guidance?: GuidanceFields;
 	disabledForModels?: DisabledForModelsEntry[];
-}
-
-/**
- * One complete /advisor selection. The four-step flow always writes all four
- * fields together, but every field is independently optional: an absent key is
- * persisted as absent (deleted), never as a stale leftover.
- */
-export interface AdvisorSelection {
-	modelKey?: string;
-	effort?: GradedEffort;
-	compressorModelKey?: string;
-	compressorEffort?: GradedEffort;
 }
 
 export function loadAdvisorConfig(): AdvisorConfig {
@@ -60,8 +53,7 @@ export function validateDisabledForModels(value: unknown): DisabledForModelsEntr
 /**
  * Drop a hand-edited effort value the ordinal cannot rank, warning rather than
  * restoring it — an unknown level would be sent as `reasoning` and rejected by
- * the provider. Shared by the advisor and compressor keys so both degrade the
- * same way in the face of a hand-edited advisor.json.
+ * the provider. Kept for the blocklist's `minEffort` comparisons.
  */
 export function validateEffort(value: unknown, field: string): GradedEffort | undefined {
 	if (value === undefined) return undefined;
@@ -70,21 +62,4 @@ export function validateEffort(value: unknown, field: string): GradedEffort | un
 		`[rpiv-advisor] advisor.json: unknown ${field} "${String(value)}" — ignoring (valid values: ${EFFORT_ORDINAL.join(", ")})`,
 	);
 	return undefined;
-}
-
-export function saveAdvisorConfig(selection: AdvisorSelection): boolean {
-	const existing = loadAdvisorConfig();
-	const config: AdvisorConfig = { ...existing };
-	// Delete (rather than omit) to clear fields that may exist in the spread
-	// from a prior read. JSON.parse always produces configurable properties,
-	// so delete is safe in strict mode.
-	if (selection.modelKey) config.modelKey = selection.modelKey;
-	else delete config.modelKey;
-	if (selection.effort) config.effort = selection.effort;
-	else delete config.effort;
-	if (selection.compressorModelKey) config.compressorModelKey = selection.compressorModelKey;
-	else delete config.compressorModelKey;
-	if (selection.compressorEffort) config.compressorEffort = selection.compressorEffort;
-	else delete config.compressorEffort;
-	return saveJsonConfig(ADVISOR_CONFIG_PATH, config);
 }

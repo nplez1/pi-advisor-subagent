@@ -10,8 +10,9 @@
  *
  * Module map:
  *   messages   — tool identity, sentinels, effort vocabulary, all strings
- *   config     — persisted config + provider:id key codec
- *   state      — in-memory model/effort selection for both stages
+ *   config     — persisted policy (guidance + disabledForModels)
+ *   selection  — the resolved model/effort/enabled for both stages, from /subagents
+ *   subagent-defaults — reads pi-subagents' agentOverrides
  *   policy     — disabledForModels blocklist + blocked predicates
  *   inventory  — globalThis tool-inventory cache + serializer
  *   context    — branch-message massaging
@@ -23,12 +24,12 @@
  *   execute    — the two-stage advisor side-call
  *   register   — advisor tool registration
  *   handlers   — mid-session lifecycle handlers
- *   restore    — session_start restoration
- *   command    — /advisor slash command
+ *   restore    — session_start activation and the startup report
+ *   command    — /advisor status report (models are set in /subagents)
  */
 
 export { registerAdvisorCommand } from "./command.js";
-export { loadAdvisorConfig, saveAdvisorConfig, validateDisabledForModels, validateEffort } from "./config.js";
+export { loadAdvisorConfig, validateDisabledForModels, validateEffort } from "./config.js";
 export { ensureUserTailForAdvisor, stripInflightAdvisorCall } from "./context.js";
 export {
 	registerAdvisorBeforeAgentStart,
@@ -48,14 +49,5 @@ export {
 	buildUserRequests,
 	isPriorAdvisorResult,
 } from "./select.js";
-export {
-	getAdvisorEffort,
-	getAdvisorModel,
-	getCompressorEffort,
-	getCompressorModel,
-	setAdvisorEffort,
-	setAdvisorModel,
-	setCompressorEffort,
-	setCompressorModel,
-} from "./state.js";
+export { resolveAdvisorSelection, type AdvisorSelection, type StageSelection } from "./selection.js";
 export { runChildAgent, serializeTranscript } from "./subagent.js";

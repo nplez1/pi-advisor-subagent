@@ -6,7 +6,11 @@
  * re-evaluation, thinking_level_select re-evaluation) that together
  * implement the advisor-strategy pattern.
  *
- * Config persists at ~/.config/rpiv-advisor/advisor.json. Tool name
+ * Config persists at ~/.config/rpiv-advisor/advisor.json — but only the policy
+ * it owns: `guidance` and `disabledForModels`. The advisor and compressor models
+ * and their reasoning levels live in pi-subagents' `agentOverrides`
+ * (subagents.json), written by /subagents and read by advisor/selection.ts, so a
+ * stage has one configurable home and /advisor only reports it. Tool name
  * preserved verbatim from rpiv-pi@7525a5d.
  */
 

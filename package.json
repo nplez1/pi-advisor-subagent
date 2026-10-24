@@ -22,8 +22,6 @@
 	"files": [
 		"index.ts",
 		"advisor/",
-		"advisor-ui.ts",
-		"fuzzy.ts",
 		"prompts/",
 		"agents/",
 		"docs/",

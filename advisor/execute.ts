@@ -30,6 +30,8 @@ import { getInventoryMessage } from "./inventory.js";
 import {
 	ADVISOR_AGENT_TYPE,
 	ERR_ABORTED_DETAIL,
+	ERR_ADVISOR_DISABLED,
+	ERR_ADVISOR_DISABLED_DETAIL,
 	ERR_CALL_ABORTED,
 	ERR_EMPTY_RESPONSE,
 	ERR_EMPTY_RESPONSE_DETAIL,
@@ -47,13 +49,8 @@ import {
 } from "./messages.js";
 import { buildAdvisorPayload, type PayloadStats } from "./payload.js";
 import { buildGroundTruth } from "./select.js";
+import { resolveAdvisorSelection } from "./selection.js";
 import { runChildAgent } from "./subagent.js";
-import {
-	getAdvisorEffort,
-	getAdvisorModel,
-	getCompressorEffort,
-	getCompressorModel,
-} from "./state.js";
 
 interface AdvisorDetails {
 	advisorModel?: string;
@@ -143,13 +140,22 @@ export async function executeAdvisor(
 	signal: AbortSignal | undefined,
 	onUpdate: AgentToolUpdateCallback<AdvisorDetails> | undefined,
 ): Promise<AgentToolResult<AdvisorDetails>> {
-	// Snapshot every setting once so a concurrent /advisor selection cannot
+	// Snapshot the selection once so a concurrent `/subagents` change cannot
 	// desync the displayed reviewer or effort from the request in flight.
-	const effort = getAdvisorEffort();
-	const advisor = getAdvisorModel();
-	const compressorEffort = getCompressorEffort();
-	const compressor = getCompressorModel();
+	// `agentOverrides` is the only source for either stage — nothing else
+	// persists a model — so there is no fallback to resolve against here.
+	const selection = resolveAdvisorSelection(ctx);
+	const effort = selection.advisor.effort;
+	const compressorEffort = selection.compressor.effort;
 
+	// The off switch is a first-class state, not a missing model: naming it as
+	// unconfigured would send the executor to /subagents to "configure" a stage
+	// the user deliberately turned off.
+	if (selection.advisor.disabled) {
+		return buildErrorResult(undefined, undefined, ERR_ADVISOR_DISABLED, ERR_ADVISOR_DISABLED_DETAIL);
+	}
+
+	const advisor = selection.advisor.model;
 	if (!advisor) {
 		return buildErrorResult(undefined, effort, ERR_NO_MODEL, ERR_NO_MODEL_SELECTED);
 	}
@@ -160,6 +166,7 @@ export async function executeAdvisor(
 	// other model would make the payload's content depend on a choice the user
 	// never made. Runtime *failure* of a configured compressor degrades instead
 	// (see below) — the distinction is configuration versus failure.
+	const compressor = selection.compressor.disabled ? undefined : selection.compressor.model;
 	if (!compressor) {
 		return buildErrorResult(advisorLabel, effort, ERR_NO_COMPRESSOR, ERR_NO_COMPRESSOR_DETAIL);
 	}
